@@ -24,7 +24,7 @@ def draw_lane(lane, img=None, img_shape=None, width=30):
     return img
 
 
-def discrete_cross_iou(xs, ys, width=30, img_shape=(590, 1640, 3)):
+def discrete_cross_iou(xs, ys, width=30, img_shape=(1200, 1920, 3)):
     xs = [draw_lane(lane, img_shape=img_shape, width=width) > 0 for lane in xs]
     ys = [draw_lane(lane, img_shape=img_shape, width=width) > 0 for lane in ys]
 
@@ -35,7 +35,7 @@ def discrete_cross_iou(xs, ys, width=30, img_shape=(590, 1640, 3)):
     return ious
 
 
-def continuous_cross_iou(xs, ys, width=30, img_shape=(590, 1640, 3)):
+def continuous_cross_iou(xs, ys, width=30, img_shape=(1200, 1920, 3)):
     h, w, _ = img_shape
     image = Polygon([(0, 0), (0, h - 1), (w - 1, h - 1), (w - 1, 0)])
     xs = [
@@ -70,9 +70,10 @@ def culane_metric(pred,
                   anno,
                   width=30,
                   iou_thresholds=[0.5],
-                  official=True,
-                  img_shape=(590, 1640, 3)):
+                  official=False,
+                  img_shape=(1200, 1920, 3)):
     _metric = {}
+
     for thr in iou_thresholds:
         tp = 0
         fp = 0 if len(anno) != 0 else len(pred)
@@ -81,17 +82,19 @@ def culane_metric(pred,
 
     interp_pred = np.array([interp(pred_lane, n=5) for pred_lane in pred],
                            dtype=object)  # (4, 50, 2)
+    
     interp_anno = np.array([interp(anno_lane, n=5) for anno_lane in anno],
                            dtype=object)  # (4, 50, 2)
-    
-    for anno_lane in anno:
-        print(anno_lane)
-    
+
+
+
     if official:
         ious = discrete_cross_iou(interp_pred,
                                   interp_anno,
                                   width=width,
                                   img_shape=img_shape)
+    
+
     else:
         ious = continuous_cross_iou(interp_pred,
                                     interp_anno,
@@ -106,6 +109,7 @@ def culane_metric(pred,
         fp = len(pred) - tp
         fn = len(anno) - tp
         _metric[thr] = [tp, fp, fn]
+
     return _metric
 
 
@@ -117,22 +121,41 @@ def load_culane_img_data(path):
     img_data = [[(lane[i], lane[i + 1]) for i in range(0, len(lane), 2)]
                 for lane in img_data]
     img_data = [lane for lane in img_data if len(lane) >= 2]
-
+    
     return img_data
 
+def load_culane_img_data_anno(anno_path):
+    with open(anno_path, 'r') as anno_file:
+        data = [
+            list(map(float, line.split()))
+            for line in anno_file.readlines()
+        ]
+    
+        lanes = [[(lane[i], lane[i + 1]) for i in range(0, len(lane), 2) if lane[i] >= 0 and lane[i + 1] >= 0] for lane in data]
+        lanes = [list(set(lane)) for lane in lanes]  # remove duplicated points        
+        lanes = [sorted(lane, key=lambda x: x[1], reverse=True)
+                 for lane in lanes]    # sort by y
+        img_data = [lane for lane in lanes if len(lane) >= 2]
 
-def load_culane_data(data_dir, file_list_path):
+        return img_data
+
+def load_culane_data(data_dir, file_list_path, anno = True):
     with open(file_list_path, 'r') as file_list:
         filepaths = [
-            os.path.join(
-                data_dir, line[1 if line[0] == '/' else 0:].rstrip().replace(
-                    '.jpg', '.lines.txt')) for line in file_list.readlines()
+        os.path.join(data_dir, line.strip()) for line in file_list.readlines()
         ]
 
     data = []
-    for path in filepaths:
-        img_data = load_culane_img_data(path)
-        data.append(img_data)
+    
+    if(anno == True):
+        for path in filepaths:
+                img_data = load_culane_img_data_anno(path)
+                data.append(img_data)
+
+    else:
+        for path in filepaths:
+            img_data = load_culane_img_data(path)
+            data.append(img_data)
 
     return data
 
@@ -142,15 +165,16 @@ def eval_predictions(pred_dir,
                      iou_thresholds=[0.5],
                      width=30,
                      official=True,
-                     sequential=False):
+                     sequential=True):
     import logging
     logger = logging.getLogger(__name__)
     logger.info('Calculating metric for List: {}'.format(list_path))
 
-    annotations = load_culane_data(anno_dir, list_path)
-    predictions = load_culane_data(pred_dir, list_path)
-    
-    img_shape = (590, 1640, 3)
+    predictions = load_culane_data(pred_dir, list_path, anno = False)
+    annotations = load_culane_data(anno_dir, list_path, anno = True)
+
+    img_shape = (1200, 1920, 3)
+
     if sequential:
         results = map(
             partial(culane_metric,
@@ -161,6 +185,7 @@ def eval_predictions(pred_dir,
     else:
         from multiprocessing import Pool, cpu_count
         from itertools import repeat
+
         with Pool(cpu_count()) as p:
             results = p.starmap(culane_metric, zip(predictions, annotations,
                         repeat(width),
